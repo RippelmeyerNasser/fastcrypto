@@ -1,18 +1,19 @@
 // Copyright (c) 2022, Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use num_bigint::BigInt;
-use num_integer::Integer;
-use num_traits::{One, Signed, Zero};
 use std::mem;
 use std::ops::Neg;
+use dashu::integer::IBig;
+use dashu::base::DivRem;
+use dashu::base::Signed;
+use dashu::base::Gcd;
 
 pub struct EuclideanAlgorithmOutput {
-    pub gcd: BigInt,
-    pub x: BigInt,
-    pub y: BigInt,
-    pub a_divided_by_gcd: BigInt,
-    pub b_divided_by_gcd: BigInt,
+    pub gcd: IBig,
+    pub x: IBig,
+    pub y: IBig,
+    pub a_divided_by_gcd: IBig,
+    pub b_divided_by_gcd: IBig,
 }
 
 impl EuclideanAlgorithmOutput {
@@ -29,13 +30,13 @@ impl EuclideanAlgorithmOutput {
 
 /// Compute the greatest common divisor gcd of a and b. The output also returns the Bezout coefficients
 /// x and y such that ax + by = gcd and also the quotients a / gcd and b / gcd.
-pub fn extended_euclidean_algorithm(a: &BigInt, b: &BigInt) -> EuclideanAlgorithmOutput {
+pub fn extended_euclidean_algorithm(a: &IBig, b: &IBig) -> EuclideanAlgorithmOutput {
     if b < a {
         return extended_euclidean_algorithm(b, a).flip();
     }
 
-    let mut s = (BigInt::zero(), BigInt::one());
-    let mut t = (BigInt::one(), BigInt::zero());
+    let mut s = (IBig::from(0), IBig::from(1));
+    let mut t = (IBig::from(1), IBig::from(0));
     let mut r = (a.clone(), b.clone());
 
     while !r.0.is_zero() {
@@ -43,7 +44,7 @@ pub fn extended_euclidean_algorithm(a: &BigInt, b: &BigInt) -> EuclideanAlgorith
         r.1 = r.0;
         r.0 = r_prime;
 
-        let f = |mut x: (BigInt, BigInt)| {
+        let f = |mut x: (IBig, IBig)| {
             mem::swap(&mut x.0, &mut x.1);
             x.0 -= &q * &x.1;
             x
@@ -85,17 +86,17 @@ pub fn extended_euclidean_algorithm(a: &BigInt, b: &BigInt) -> EuclideanAlgorith
 
 #[test]
 fn test_xgcd() {
-    test_xgcd_single(BigInt::from(240), BigInt::from(46));
-    test_xgcd_single(BigInt::from(-240), BigInt::from(46));
-    test_xgcd_single(BigInt::from(240), BigInt::from(-46));
-    test_xgcd_single(BigInt::from(-240), BigInt::from(-46));
+    test_xgcd_single(IBig::from(240), IBig::from(46));
+    test_xgcd_single(IBig::from(-240), IBig::from(46));
+    test_xgcd_single(IBig::from(240), IBig::from(-46));
+    test_xgcd_single(IBig::from(-240), IBig::from(-46));
 }
 
 #[cfg(test)]
-fn test_xgcd_single(a: BigInt, b: BigInt) {
+fn test_xgcd_single(a: IBig, b: IBig) {
     let output = extended_euclidean_algorithm(&a, &b);
-    assert_eq!(output.gcd, a.gcd(&b));
-    assert_eq!(&output.x * &a + &output.y * &b, output.gcd);
+    assert_eq!(output.gcd, a.clone().gcd(&b).into());
+    assert_eq!(&output.x * &a.clone() + &output.y * &b, output.gcd);
     assert_eq!(output.a_divided_by_gcd, &a / &output.gcd);
     assert_eq!(output.b_divided_by_gcd, &b / &output.gcd);
 }

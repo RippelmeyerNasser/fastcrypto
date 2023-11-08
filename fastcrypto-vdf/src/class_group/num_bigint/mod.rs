@@ -7,12 +7,20 @@ use crate::class_group::num_bigint::bigint_utils::{
 use crate::{ParameterizedGroupElement, UnknownOrderGroupElement};
 use fastcrypto::error::FastCryptoError::InvalidInput;
 use fastcrypto::error::{FastCryptoError, FastCryptoResult};
-use num_bigint::BigInt;
+use num_bigint::{BigInt};
 use num_integer::Integer;
-use num_traits::{One, Signed, Zero};
+use num_traits::{Zero};
 use std::cmp::Ordering;
 use std::mem::swap;
 use std::ops::{Add, Neg};
+use dashu::integer::{IBig, UBig};
+use dashu::base::{Abs, AbsOrd, BitTest, DivEuclid, RemEuclid, Sign, UnsignedAbs};
+use dashu::base::SquareRoot;
+use dashu::base::Signed;
+use std::ops::Div;
+use dashu::base::DivRem;
+use std::ops::Rem;
+use num_traits::Signed as OtherSigned;
 
 mod bigint_utils;
 mod compressed;
@@ -23,22 +31,22 @@ mod compressed;
 /// the composition algorithm.
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct QuadraticForm {
-    a: BigInt,
-    b: BigInt,
-    c: BigInt,
-    partial_gcd_limit: BigInt,
+    a: IBig,
+    b: IBig,
+    c: IBig,
+    partial_gcd_limit: IBig,
 }
 
 impl QuadraticForm {
     /// Create a new quadratic form given only the a and b coefficients and the discriminant.
-    pub fn from_a_b_discriminant(a: BigInt, b: BigInt, discriminant: &Discriminant) -> Self {
-        let c = ((&b * &b) - &discriminant.0) / (BigInt::from(4) * &a);
+    pub fn from_a_b_discriminant(a: IBig, b: IBig, discriminant: &Discriminant) -> Self {
+        let c = ((&b * &b) - &discriminant.0) / (IBig::from(4) * &a);
         Self {
             a,
             b,
             c,
             // This limit is used by `partial_euclidean_algorithm` in the add method.
-            partial_gcd_limit: discriminant.0.abs().sqrt().sqrt(),
+            partial_gcd_limit: discriminant.0.clone().abs().sqrt().sqrt().into(),
         }
     }
 
@@ -46,18 +54,18 @@ impl QuadraticForm {
     /// group with a given discriminant. We use the element `(2, 1, c)` where `c` is determined from
     /// the discriminant.
     pub fn generator(discriminant: &Discriminant) -> Self {
-        Self::from_a_b_discriminant(BigInt::from(2), BigInt::one(), discriminant)
+        Self::from_a_b_discriminant(IBig::from(2), IBig::from(1), discriminant)
     }
 
     /// Compute the discriminant `b^2 - 4ac` for this quadratic form.
     pub fn discriminant(&self) -> Discriminant {
-        Discriminant::try_from(self.b.pow(2) - (BigInt::from(4) * &self.a * &self.c))
+        Discriminant::try_from(self.b.pow(2) - (IBig::from(4) * &self.a * &self.c))
             .expect("The discriminant is checked in the constructors")
     }
 
     /// Return true if this form is in normal form: -a < b <= a.
     fn is_normal(&self) -> bool {
-        match self.b.magnitude().cmp(self.a.magnitude()) {
+        match self.b.abs_cmp(&self.a) {
             Ordering::Less => true,
             Ordering::Equal => !self.b.is_negative(),
             Ordering::Greater => false,
@@ -70,7 +78,7 @@ impl QuadraticForm {
         if self.is_normal() {
             return self;
         }
-        let r = (&self.a - &self.b).div_floor(&(&self.a * 2));
+        let r = (&self.a - &self.b).div_euclid(&(&self.a * 2));
         let ra = &r * &self.a;
         let c = self.c + (&ra + &self.b) * &r;
         let b = self.b + &ra * 2;
@@ -97,7 +105,7 @@ impl QuadraticForm {
         // See section 5 in https://github.com/Chia-Network/chiavdf/blob/main/classgroups.pdf.
         let mut form = self.normalize();
         while !form.is_reduced() {
-            let s = (&form.b + &form.c).div_floor(&(&form.c * 2));
+            let s = (&form.b + &form.c).div_euclid(&(&form.c * 2));
             let cs = &form.c * &s;
             let old_c = form.c.clone();
             form.c = (&cs - &form.b) * &s + &form.a;
@@ -125,7 +133,7 @@ impl QuadraticForm {
         if w1 < w2 {
             swap(&mut (u1, v1, w1), &mut (u2, v2, w2));
         }
-        let s: BigInt = (v1 + v2) >> 1;
+        let s: IBig = (v1 + v2) >> 1;
         let m = v2 - &s;
 
         // 2.
@@ -137,7 +145,7 @@ impl QuadraticForm {
             b_divided_by_gcd: mut capital_by,
         } = extended_euclidean_algorithm(u2, u1);
 
-        let (q, r) = s.div_rem(&f);
+        let (q, r) = s.clone().div_rem(&f);
         let (g, capital_bx, capital_dy) = if r.is_zero() {
             (f, &m * &b, q)
         } else {
@@ -153,7 +161,7 @@ impl QuadraticForm {
             capital_cy *= &h;
 
             // 4.
-            let l = (&y * (&b * (w1.mod_floor(&h)) + &c * (w2.mod_floor(&h)))).mod_floor(&h);
+            let l = (&y * (&b * (w1.rem_euclid(&h)) + &c * (w2.rem_euclid(&h)))).rem_euclid(&h);
             (
                 g,
                 &b * (&m / &h) + &l * (&capital_by / &h),
@@ -162,30 +170,30 @@ impl QuadraticForm {
         };
 
         // 5. (partial xgcd)
-        let mut bx = capital_bx.mod_floor(&capital_by);
+        let mut bx = capital_bx.rem_euclid(&capital_by);
         let mut by = capital_by.clone();
 
-        let mut x = BigInt::one();
-        let mut y = BigInt::zero();
+        let mut x = IBig::from(1);
+        let mut y = IBig::default();
         let mut z = 0u32;
 
-        while by.abs() > self.partial_gcd_limit && !bx.is_zero() {
+        while by.clone().abs() > self.partial_gcd_limit && !bx.is_zero() {
             let (q, t) = by.div_rem(&bx);
-            by = bx;
-            bx = t;
+            by = bx.into();
+            bx = t.unsigned_abs();
             swap(&mut x, &mut y);
             x -= &q * &y;
             z += 1;
         }
 
         if z.is_odd() {
-            by = -by;
+            by = by.neg();
             y = -y;
         }
 
-        let u3: BigInt;
-        let w3: BigInt;
-        let v3: BigInt;
+        let u3: IBig;
+        let w3: IBig;
+        let v3: IBig;
 
         if z == 0 {
             // 6.
@@ -232,7 +240,7 @@ impl ParameterizedGroupElement for QuadraticForm {
     type ScalarType = BigInt;
 
     fn zero(discriminant: &Self::ParameterType) -> Self {
-        Self::from_a_b_discriminant(BigInt::one(), BigInt::one(), discriminant)
+        Self::from_a_b_discriminant(IBig::from(1), IBig::from(1), discriminant)
     }
 
     fn double(self) -> Self {
@@ -253,17 +261,17 @@ impl ParameterizedGroupElement for QuadraticForm {
             b_divided_by_gcd: capital_dy,
         } = extended_euclidean_algorithm(u, v);
 
-        let mut bx = (&y * w).mod_floor(&capital_by);
+        let mut bx = (&y * w).rem_euclid(&capital_by);
         let mut by = capital_by.clone();
 
-        let mut x = BigInt::one();
-        let mut y = BigInt::zero();
+        let mut x = IBig::from(1);
+        let mut y = IBig::default();
         let mut z = 0u32;
 
-        while by.abs() > self.partial_gcd_limit && !bx.is_zero() {
+        while by.clone().abs() > self.partial_gcd_limit && !bx.is_zero() {
             let (q, t) = by.div_rem(&bx);
-            by = bx;
-            bx = t;
+            by = bx.into();
+            bx = t.unsigned_abs();
             swap(&mut x, &mut y);
             x -= &q * &y;
             z += 1;
@@ -274,14 +282,14 @@ impl ParameterizedGroupElement for QuadraticForm {
             y = -y;
         }
 
-        let mut u3: BigInt;
-        let mut w3: BigInt;
-        let mut v3: BigInt;
+        let mut u3: IBig;
+        let mut w3: IBig;
+        let mut v3: IBig;
 
         if z == 0 {
             let dx = (&bx * &capital_dy - w) / &capital_by;
             u3 = &by * &by;
-            w3 = &bx * &bx;
+            w3 = (&bx * &bx).into();
             let s = &bx + &by;
             v3 = v - &s * &s + &u3 + &w3;
             w3 = &w3 - &g * &dx;
@@ -292,7 +300,7 @@ impl ParameterizedGroupElement for QuadraticForm {
             v3 = &g * (&dy + &q1);
             dy = &dy / &x;
             u3 = &by * &by;
-            w3 = &bx * &bx;
+            w3 = (&bx * &bx).into();
             v3 = &v3 - (&bx + &by).pow(2) + &u3 + &w3;
 
             u3 = &u3 - &g * &y * &dy;
@@ -374,13 +382,24 @@ impl UnknownOrderGroupElement for QuadraticForm {}
 /// A discriminant for an imaginary class group. The discriminant is a negative integer which is
 /// equal to 1 mod 4.
 #[derive(PartialEq, Eq, Debug, Clone)]
-pub struct Discriminant(BigInt);
+pub struct Discriminant(IBig);
 
 impl TryFrom<BigInt> for Discriminant {
     type Error = FastCryptoError;
 
     fn try_from(value: BigInt) -> FastCryptoResult<Self> {
-        if !value.is_negative() || value.mod_floor(&BigInt::from(4)) != BigInt::from(1) {
+        if !value.is_negative() {
+            return Err(InvalidInput);
+        }
+        Self::try_from(IBig::from_parts(Sign::Negative, UBig::from_be_bytes(&value.to_bytes_be().1)))
+    }
+}
+
+impl TryFrom<IBig> for Discriminant {
+    type Error = FastCryptoError;
+
+    fn try_from(value: IBig) -> FastCryptoResult<Self> {
+        if !value.is_negative() || value.clone().rem_euclid(&IBig::from(4u8)) != UBig::from(1u8) {
             return Err(InvalidInput);
         }
         Ok(Self(value))
@@ -390,18 +409,18 @@ impl TryFrom<BigInt> for Discriminant {
 impl Discriminant {
     /// Return the number of bits needed to represent this discriminant, not including the sign bit.
     pub fn bits(&self) -> usize {
-        self.0.bits() as usize
+        self.0.bit_len()
     }
 
     /// Returns the big-endian byte representation of the absolute value of this discriminant.
     pub fn to_bytes(&self) -> Vec<u8> {
-        self.0.to_bytes_be().1
+        self.0.clone().unsigned_abs().to_be_bytes().to_vec()
     }
 
     /// Try to create a discriminant from a big-endian byte representation of the absolute value.
     /// Fails if the discriminant is not equal to 1 mod 4.
     pub fn try_from_be_bytes(bytes: &[u8]) -> FastCryptoResult<Self> {
-        let discriminant = BigInt::from_bytes_be(num_bigint::Sign::Minus, bytes);
+        let discriminant = IBig::from(UBig::from_be_bytes(bytes)).neg();
         Self::try_from(discriminant)
     }
 }
@@ -410,11 +429,12 @@ impl Discriminant {
 mod tests {
     use crate::class_group::{Discriminant, QuadraticForm};
     use crate::ParameterizedGroupElement;
+    use dashu::integer::IBig;
     use num_bigint::BigInt;
 
     #[test]
     fn test_multiplication() {
-        let discriminant = Discriminant::try_from(BigInt::from(-47)).unwrap();
+        let discriminant = Discriminant::try_from(IBig::from(-47)).unwrap();
         let generator = QuadraticForm::generator(&discriminant);
         let mut current = QuadraticForm::zero(&discriminant);
         for i in 0..10000 {
@@ -425,30 +445,30 @@ mod tests {
 
     #[test]
     fn test_normalization_and_reduction() {
-        let discriminant = Discriminant::try_from(BigInt::from(-19)).unwrap();
+        let discriminant = Discriminant::try_from(IBig::from(-19)).unwrap();
         let mut quadratic_form =
-            QuadraticForm::from_a_b_discriminant(BigInt::from(11), BigInt::from(49), &discriminant);
-        assert_eq!(quadratic_form.c, BigInt::from(55));
+            QuadraticForm::from_a_b_discriminant(IBig::from(11), IBig::from(49), &discriminant);
+        assert_eq!(quadratic_form.c, IBig::from(55));
 
         quadratic_form = quadratic_form.normalize();
 
         // Test vector from https://github.com/Chia-Network/vdf-competition/blob/main/classgroups.pdf
-        assert_eq!(quadratic_form.a, BigInt::from(11));
-        assert_eq!(quadratic_form.b, BigInt::from(5));
-        assert_eq!(quadratic_form.c, BigInt::from(1));
+        assert_eq!(quadratic_form.a, IBig::from(11));
+        assert_eq!(quadratic_form.b, IBig::from(5));
+        assert_eq!(quadratic_form.c, IBig::from(1));
 
         quadratic_form = quadratic_form.reduce();
 
         // Test vector from https://github.com/Chia-Network/vdf-competition/blob/main/classgroups.pdf
-        assert_eq!(quadratic_form.a, BigInt::from(1));
-        assert_eq!(quadratic_form.b, BigInt::from(1));
-        assert_eq!(quadratic_form.c, BigInt::from(5));
+        assert_eq!(quadratic_form.a, IBig::from(1));
+        assert_eq!(quadratic_form.b, IBig::from(1));
+        assert_eq!(quadratic_form.c, IBig::from(5));
     }
 
     #[test]
     fn test_composition() {
         // The order of the class group (the class number) for -223 is 7 (see https://mathworld.wolfram.com/ClassNumber.html).
-        let discriminant = Discriminant::try_from(BigInt::from(-223)).unwrap();
+        let discriminant = Discriminant::try_from(IBig::from(-223)).unwrap();
         let g = QuadraticForm::generator(&discriminant);
 
         for i in 1..=6 {
@@ -462,7 +482,7 @@ mod tests {
         assert!(Discriminant::try_from_be_bytes(&[0x01]).is_err());
         assert!(Discriminant::try_from_be_bytes(&[0x03]).is_ok());
 
-        let discriminant = Discriminant::try_from(BigInt::from(-223)).unwrap();
+        let discriminant = Discriminant::try_from(IBig::from(-223)).unwrap();
         let bytes = discriminant.to_bytes();
         let discriminant2 = Discriminant::try_from_be_bytes(&bytes).unwrap();
         assert_eq!(discriminant, discriminant2);
